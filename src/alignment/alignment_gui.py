@@ -123,12 +123,14 @@ def main():
     parser.add_argument('--floor', type=str, required=True, help='Floor name (e.g., FRB2)')
     args = parser.parse_args()
 
-    base_path = os.path.expanduser(f"/home/kevin-zhou/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/slam_result/{args.floor}")
-    img_path = os.path.join(base_path, "floorplan.png")
-    kf_path = os.path.join(base_path, f"kf_{args.floor}.txt")
-    map_path = os.path.join(base_path, "map_points.txt")
+    floorplan_path = os.path.expanduser(f"/home/kevin-zhou/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/floorplans")
+    img_path = os.path.join(floorplan_path, f"{args.floor}.jpg")
+    print(f"Loading floorplan image from {img_path}")
+    slam_path = os.path.expanduser(f"/home/kevin-zhou/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/slam_result/{args.floor}")
+    kf_path = os.path.join(slam_path, f"kf_{args.floor}.txt")
+    map_path = os.path.join(slam_path, "map_points.txt")
 
-    if not os.path.exists(img_path) or not os.path.exists(kf_path):
+    if not os.path.exists(img_path) or not os.path.exists(kf_path) or not os.path.exists(map_path):
         print("❌ Missing required files.")
         return
 
