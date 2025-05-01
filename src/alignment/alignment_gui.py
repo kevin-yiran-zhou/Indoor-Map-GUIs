@@ -2,13 +2,11 @@ import os
 import argparse
 import numpy as np
 import tkinter as tk
-from tkinter import messagebox
-from tkinter import Label, Button
-from PIL import Image, ImageTk
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from sklearn.decomposition import PCA
-from skimage.transform import estimate_transform
+from scipy.interpolate import Rbf
 
 # ========= Loaders ========= #
 def load_keyframes(path):
@@ -39,108 +37,122 @@ def project_to_plane(trajectory, pointcloud):
     pca.fit(all_points)
     traj_2d = pca.transform(trajectory)
     pc_2d = pca.transform(pointcloud)
+    traj_2d[:, 1] *= -1
+    pc_2d[:, 1] *= -1
     return traj_2d, pc_2d
 
-# ========= Main GUI Class ========= #
-class AlignmentGUI:
-    def __init__(self, root, floorplan_img, keyframe_positions, point_cloud=None):
+class PointCloudAligner:
+    def __init__(self, root, kf, pc, floor_img):
         self.root = root
-        self.root.title("Alignment Tool")
-        self.kf_3d = keyframe_positions
-        self.pc_3d = point_cloud if point_cloud is not None else np.empty((0, 3))
-        self.kf, self.pc = project_to_plane(self.kf_3d, self.pc_3d)
+        self.kf = kf
+        self.pc = pc
+        self.floor_img = floor_img
 
-        self.kf_pts = []
-        self.img_pts = []
-        self.img_array = floorplan_img
+        self.kf_points = []
+        self.floor_points = []
 
-        # === Floorplan Panel ===
-        img_rgb = (floorplan_img * 255).astype(np.uint8) if floorplan_img.max() <= 1.0 else floorplan_img
-        img_pil = Image.fromarray(img_rgb)
-        self.tk_image = ImageTk.PhotoImage(image=img_pil)
+        self.selected_kf_point = None
+        self.selected_floor_point = None
 
-        img_label = Label(root, image=self.tk_image)
-        img_label.grid(row=0, column=0, rowspan=4, padx=10, pady=10)
+        self.status_var = tk.StringVar()
 
-        # === Controls Panel ===
-        Button(root, text="Show SLAM Trajectory", command=self.show_kf_plot, width=25).grid(row=0, column=1, pady=10)
-        Button(root, text="Show Floorplan", command=self.show_img_plot, width=25).grid(row=1, column=1, pady=10)
+        self.fig, (self.ax_top, self.ax_bottom) = plt.subplots(2, 1, figsize=(8, 8))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.root)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas.mpl_connect("button_press_event", self.on_click)
 
-        self.info_label = Label(root, text=f"Correspondences: 0")
-        self.info_label.grid(row=2, column=1, pady=10)
+        button_frame = tk.Frame(root)
+        button_frame.pack(pady=5)
+        tk.Button(button_frame, text="Add Correspondence", command=self.add_correspondence, font=("Helvetica", 14), width=20, height=2).pack(side=tk.LEFT, padx=10)
+        tk.Button(button_frame, text="Remove Last Correspondence", command=self.remove_last_correspondence, font=("Helvetica", 14), width=25, height=2).pack(side=tk.LEFT, padx=10)
 
-        Button(root, text="Compute Alignment", command=self.compute_alignment, width=25).grid(row=3, column=1, pady=10)
+        tk.Label(root, textvariable=self.status_var, fg="blue", font=("Helvetica", 12)).pack(pady=4)
 
-    def update_info_label(self):
-        self.info_label.config(text=f"Correspondences: {len(self.kf_pts)}")
+        self.redraw()
 
-    def show_kf_plot(self):
-        fig, ax = plt.subplots()
-        ax.set_title("SLAM Trajectory + Map Points (Projected 2D)")
-        ax.plot(self.kf[:, 0], self.kf[:, 1], 'r.-', label="Keyframes")
+    def on_click(self, event):
+        if event.inaxes == self.ax_top:
+            self.selected_kf_point = np.array([event.xdata, event.ydata])
+        elif event.inaxes == self.ax_bottom:
+            self.selected_floor_point = np.array([event.xdata, event.ydata])
+        self.redraw()
+
+    def add_correspondence(self):
+        if self.selected_kf_point is not None and self.selected_floor_point is not None:
+            self.kf_points.append(self.selected_kf_point)
+            self.floor_points.append(self.selected_floor_point)
+            self.selected_kf_point = None
+            self.selected_floor_point = None
+            self.status_var.set(f"Added correspondence. Total: {len(self.kf_points)}")
+            self.redraw()
+
+    def remove_last_correspondence(self):
+        if self.kf_points:
+            self.kf_points.pop()
+            self.floor_points.pop()
+            self.status_var.set(f"Removed last correspondence. Total: {len(self.kf_points)}")
+            self.redraw()
+
+    def redraw(self):
+        self.ax_top.clear()
+        self.ax_top.set_title("Point Cloud and Trajectory")
+        self.ax_top.plot(self.kf[:, 0], self.kf[:, 1], 'r.-', label='Keyframes')
         if self.pc is not None:
-            ax.scatter(self.pc[:, 0], self.pc[:, 1], s=1, c='blue', alpha=0.3, label="Map Points")
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_aspect('equal')
-        ax.legend()
-        plt.tight_layout()
-        plt.show()
+            self.ax_top.scatter(self.pc[:, 0], self.pc[:, 1], s=1, c='blue', alpha=0.3, label='Map Points')
+        if self.selected_kf_point is not None:
+            self.ax_top.plot(self.selected_kf_point[0], self.selected_kf_point[1], 'ko', markersize=10, label='Selected')
+        self.ax_top.set_aspect('equal')
+        self.ax_top.legend()
 
-    def show_img_plot(self):
-        fig, ax = plt.subplots()
-        ax.set_title("Floorplan Image")
-        ax.imshow(self.img_array, cmap='gray')
-        ax.set_aspect('equal')
-        plt.tight_layout()
-        plt.show()
+        self.ax_bottom.clear()
+        self.ax_bottom.set_title("Floor Plan + TPS Aligned")
+        self.ax_bottom.imshow(self.floor_img, cmap='gray', origin='upper')
+        self.ax_bottom.set_xlim([0, self.floor_img.shape[1]])
+        self.ax_bottom.set_ylim([self.floor_img.shape[0], 0])
 
-    def compute_alignment(self):
-        if len(self.kf_pts) < 3:
-            messagebox.showerror("Error", "Need at least 3 correspondences to compute alignment.")
-            return
+        for pt in self.floor_points:
+            self.ax_bottom.plot(pt[0], pt[1], 'go', markersize=5)
+        if len(self.kf_points) >= 4:
+            src = np.array(self.kf_points)
+            dst = np.array(self.floor_points)
+            fx = Rbf(src[:, 0], src[:, 1], dst[:, 0], function='thin_plate')
+            fy = Rbf(src[:, 0], src[:, 1], dst[:, 1], function='thin_plate')
+            aligned_kf = np.stack([fx(self.kf[:, 0], self.kf[:, 1]), fy(self.kf[:, 0], self.kf[:, 1])], axis=1)
+            self.ax_bottom.plot(aligned_kf[:, 0], aligned_kf[:, 1], 'r.-', label='Aligned Keyframes')
+            if self.pc is not None:
+                aligned_pc = np.stack([fx(self.pc[:, 0], self.pc[:, 1]), fy(self.pc[:, 0], self.pc[:, 1])], axis=1)
+                self.ax_bottom.scatter(aligned_pc[:, 0], aligned_pc[:, 1], s=1, c='blue', alpha=0.3, label='Aligned Map Points')
+            self.ax_bottom.legend()
+        if self.selected_floor_point is not None:
+            self.ax_bottom.plot(self.selected_floor_point[0], self.selected_floor_point[1], 'ko', markersize=10, label='Selected')
+        self.ax_bottom.set_aspect('equal')
+        self.canvas.draw()
 
-        tform = estimate_transform('similarity', np.array(self.kf_pts), np.array(self.img_pts))
-        print("✅ Alignment complete.")
-
-        transformed = tform(self.kf)
-        fig, ax = plt.subplots()
-        ax.set_title("Aligned Trajectory")
-        ax.imshow(self.img_array, cmap='gray')
-        ax.plot(transformed[:, 0], transformed[:, 1], 'r--', label='Aligned Trajectory')
-
-        if self.pc is not None:
-            pc2d = tform(self.pc)
-            ax.scatter(pc2d[:, 0], pc2d[:, 1], s=1, c='blue', alpha=0.3, label='Map Points')
-
-        ax.legend()
-        ax.set_aspect('equal')
-        plt.show()
-
-# ========= Main ========= #
+# ======= Main launcher using real files ======= #
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--floor', type=str, required=True, help='Floor name (e.g., FRB2)')
     args = parser.parse_args()
 
-    floorplan_path = os.path.expanduser(f"/home/kevin-zhou/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/floorplans")
+    floorplan_path = os.path.expanduser("~/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/floorplans")
     img_path = os.path.join(floorplan_path, f"{args.floor}.jpg")
-    print(f"Loading floorplan image from {img_path}")
-    slam_path = os.path.expanduser(f"/home/kevin-zhou/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/slam_result/{args.floor}")
+    slam_path = os.path.expanduser(f"~/Desktop/UMich/WeilandLab/Indoor-Map-GUIs/data/slam_result/{args.floor}")
     kf_path = os.path.join(slam_path, f"kf_{args.floor}.txt")
     map_path = os.path.join(slam_path, "map_points.txt")
 
-    if not os.path.exists(img_path) or not os.path.exists(kf_path) or not os.path.exists(map_path):
-        print("❌ Missing required files.")
+    if not os.path.exists(img_path) or not os.path.exists(kf_path):
+        print("Missing required files.")
         return
 
     img = mpimg.imread(img_path)
     kf = load_keyframes(kf_path)
     pc = load_map_points(map_path) if os.path.exists(map_path) else None
+    kf_2d, pc_2d = project_to_plane(kf, pc)
 
     root = tk.Tk()
-    app = AlignmentGUI(root, img, kf, pc)
+    root.title("Point Cloud TPS Alignment GUI")
+    app = PointCloudAligner(root, kf_2d, pc_2d, img)
     root.mainloop()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
