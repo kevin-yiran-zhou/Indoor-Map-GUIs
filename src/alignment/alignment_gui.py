@@ -42,11 +42,12 @@ def project_to_plane(trajectory, pointcloud):
     return traj_2d, pc_2d
 
 class PointCloudAligner:
-    def __init__(self, root, kf, pc, floor_img):
+    def __init__(self, root, kf, pc, floor_img, slam_path):
         self.root = root
         self.kf = kf
         self.pc = pc
         self.floor_img = floor_img
+        self.slam_path = slam_path
 
         self.kf_points = []
         self.floor_points = []
@@ -65,9 +66,11 @@ class PointCloudAligner:
         button_frame.pack(pady=5)
         tk.Button(button_frame, text="Add Correspondence", command=self.add_correspondence, font=("Helvetica", 14), width=20, height=2).pack(side=tk.LEFT, padx=10)
         tk.Button(button_frame, text="Remove Last Correspondence", command=self.remove_last_correspondence, font=("Helvetica", 14), width=25, height=2).pack(side=tk.LEFT, padx=10)
+        tk.Button(button_frame, text="Save Correspondences", command=self.save_correspondences, font=("Helvetica", 14), width=25, height=2).pack(side=tk.LEFT, padx=10)
 
         tk.Label(root, textvariable=self.status_var, fg="blue", font=("Helvetica", 12)).pack(pady=4)
-
+        
+        self.load_correspondences()
         self.redraw()
 
     def on_click(self, event):
@@ -76,6 +79,17 @@ class PointCloudAligner:
         elif event.inaxes == self.ax_bottom:
             self.selected_floor_point = np.array([event.xdata, event.ydata])
         self.redraw()
+
+    def load_correspondences(self):
+        path = os.path.join(self.slam_path, f"correspondences.txt")
+        if not os.path.exists(path):
+            return
+        with open(path, 'r') as f:
+            for line in f:
+                kx, ky, fx, fy = map(float, line.strip().split())
+                self.kf_points.append(np.array([kx, ky]))
+                self.floor_points.append(np.array([fx, fy]))
+        self.status_var.set(f"Loaded {len(self.kf_points)} correspondences.")
 
     def add_correspondence(self):
         if self.selected_kf_point is not None and self.selected_floor_point is not None:
@@ -92,6 +106,16 @@ class PointCloudAligner:
             self.floor_points.pop()
             self.status_var.set(f"Removed last correspondence. Total: {len(self.kf_points)}")
             self.redraw()
+    
+    def save_correspondences(self):
+        if not self.kf_points or not self.floor_points:
+            self.status_var.set("Nothing to save.")
+            return
+        save_path = os.path.join(self.slam_path, f"correspondences.txt")
+        with open(save_path, 'w') as f:
+            for kf_pt, fl_pt in zip(self.kf_points, self.floor_points):
+                f.write(f"{kf_pt[0]} {kf_pt[1]} {fl_pt[0]} {fl_pt[1]}\n")
+        self.status_var.set(f"Saved {len(self.kf_points)} correspondences.")
 
     def redraw(self):
         self.ax_top.clear()
@@ -151,7 +175,8 @@ def main():
 
     root = tk.Tk()
     root.title("Point Cloud TPS Alignment GUI")
-    app = PointCloudAligner(root, kf_2d, pc_2d, img)
+    app = PointCloudAligner(root, kf_2d, pc_2d, img, slam_path)
+
     root.mainloop()
 
 if __name__ == '__main__':
